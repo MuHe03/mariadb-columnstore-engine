@@ -405,7 +405,44 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
       },
     },
   },
-
+  cmapipython:: {
+    name: 'cmapi python',
+    image: 'rockylinux:8',
+    volumes: [pipeline._volumes.mdb],
+    environment: {
+      PYTHON_URL_AMD64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-x86_64_v4-unknown-linux-gnu-noopt-full.tar.zst',
+      PYTHON_URL_ARM64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-aarch64-unknown-linux-gnu-noopt-full.tar.zst',
+    },
+    commands: [
+      'cd cmapi',
+      'dnf install -y wget zstd findutils',
+      'wget -qO- $${PYTHON_URL_' + std.asciiUpper(arch) + '} | tar --use-compress-program=unzstd -xf - -C ./',
+      'mv python pp && mv pp/install python',
+      'chown -R root:root python',
+      'python/bin/pip3 install -t deps --only-binary :all -r requirements.txt',
+      './cleanup.sh',
+      'cp cmapi_server/cmapi_server.conf cmapi_server/cmapi_server.conf.default',
+    ],
+  },
+  cmapibuild:: {
+    name: 'cmapi build',
+    depends_on: ['cmapi python'],
+    image: img,
+    volumes: [pipeline._volumes.mdb],
+    environment: {
+      DEBIAN_FRONTEND: 'noninteractive',
+    },
+    commands: [
+      'mkdir -p ' + result,
+      'cd cmapi',
+      if (pkg_format == 'rpm') then 'yum install -y cmake make rpm-build libarchive createrepo findutils' else 'apt update && apt install --no-install-recommends -y cmake make',
+      './cleanup.sh',
+      'cmake -D' + std.asciiUpper(pkg_format) + '=1 . && make package',
+      'mv *.' + pkg_format + ' ../' + result + '/',
+      'cd ../',
+      if (pkg_format == 'rpm') then 'createrepo ' + result else 'dpkg-scanpackages ' + result + ' | gzip > ' + result + '/Packages.gz',
+    ],
+  },
 
   kind: 'pipeline',
   type: 'docker',
@@ -445,6 +482,7 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
                'cp -r /drone/src /mdb/' + builddir + '/storage/columnstore/columnstore',
              ],
            },
+
            {
              name: 'build',
              depends_on: ['clone-mdb'],
@@ -469,7 +507,7 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
              },
              commands: [
                'cd /mdb/' + builddir,
-               'mkdir ' + result,
+               'mkdir -p ' + result,
                "sed -i 's|.*-d storage/columnstore.*|elif [[ -d storage/columnstore/columnstore/debian ]]|' debian/autobake-deb.sh",
                if (std.startsWith(server, '10.6')) then "sed -i 's/mariadb-server/mariadb-server-10.6/' storage/columnstore/columnstore/debian/control",
                // Remove Debian build flags that could prevent ColumnStore from building
@@ -520,13 +558,16 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
                'echo "server: $$(git rev-parse HEAD)" >> buildinfo.txt',
                'echo "buildNo: $DRONE_BUILD_NUMBER" >> buildinfo.txt',
                'mv buildinfo.txt ' + result + '/',
-               'mv ' + result + ' /drone/src/',
+               'shopt -s dotglob',
+               'mv ' + result + '/* /drone/src/' + result + '/',
                'ls -l /drone/src/' + result,
                'echo "check columnstore package:"',
                'ls -l /drone/src/' + result + ' | grep columnstore',
              ],
            },
          ] +
+         (if (platform != 'centos:7') then [pipeline.cmapipython] + [pipeline.cmapibuild] else []) +
+         (if (platform != 'centos:7') then [pipeline.publish('cmapi build')] else []) +
          [pipeline.publish()] +
          (if (event == 'cron') then [pipeline.publish('pkg latest', 'latest')] else []) +
          (if (event != 'custom') && (platform == 'rockylinux:8') && (arch == 'amd64') && (server == '10.6-enterprise') then [pipeline.dockerfile] + [pipeline.dockerhub] else []) +

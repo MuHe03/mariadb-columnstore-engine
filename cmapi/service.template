@@ -1,0 +1,11 @@
+[Unit]
+Description=${CPACK_PACKAGE_DESCRIPTION_SUMMARY}
+
+[Service]
+Environment=PYTHONPATH=${CMAPI_DIR}/deps
+ExecStart=${CMAPI_DIR}/python/bin/python3 -m cmapi_server
+User=${CMAPI_USER}
+WorkingDirectory=${CMAPI_DIR}
+
+[Install]
+WantedBy=multi-user.target
