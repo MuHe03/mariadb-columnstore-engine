@@ -5,7 +5,7 @@ from pathlib import Path
 from shutil import rmtree
 
 from cmapi_server.constants import MCS_MODULE_FILE_PATH
-from mcs_node_control.models.node_status import NodeStatus, PROC_NAMES
+from mcs_node_control.models.node_status import NodeStatus
 
 
 logging.basicConfig(level='DEBUG')
@@ -24,13 +24,6 @@ class NodeStatusTest(unittest.TestCase):
     def test_dbrm_status(self):
         node_status = NodeStatus()
         self.assertEqual(node_status.get_dbrm_status(), 'master')
-
-    def test_services_statuses(self):
-        node_status = NodeStatus()
-        statuses = node_status.get_services_statuses()
-        for e in statuses:
-            found = e['name'] in PROC_NAMES
-            self.assertEqual(found, True);
 
     def test_dbroots(self):
         try:

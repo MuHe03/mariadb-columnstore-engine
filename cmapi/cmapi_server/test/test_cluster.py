@@ -7,13 +7,11 @@ from shutil import copyfile
 import requests
 
 from cmapi_server.controllers.dispatcher import _version
+from cmapi_server.managers.process import MCSProcessManager
 from cmapi_server.test.unittest_global import (
     BaseServerTestCase, MCS_CONFIG_FILEPATH, COPY_MCS_CONFIG_FILEPATH,
     TEST_MCS_CONFIG_FILEPATH,
 )
-from mcs_node_control.models.node_config import NodeConfig
-from mcs_node_control.models.os_operations import OSOperations
-from mcs_node_control.models.systemd import dispatcher
 
 
 logging.basicConfig(level='DEBUG')
@@ -31,14 +29,14 @@ class BaseClusterTestCase(BaseServerTestCase):
     def tearDownClass(cls) -> None:
         copyfile(COPY_MCS_CONFIG_FILEPATH, MCS_CONFIG_FILEPATH)
         os.remove(os.path.abspath(COPY_MCS_CONFIG_FILEPATH))
-        OSOperations().shutdown_node(dispatcher)
-        OSOperations().start_node(dispatcher)
+        MCSProcessManager.stop_node(is_primary=True)
+        MCSProcessManager.start_node(is_primary=True)
         return super().tearDownClass()
 
     def setUp(self) -> None:
         copyfile(TEST_MCS_CONFIG_FILEPATH, MCS_CONFIG_FILEPATH)
-        OSOperations().shutdown_node(dispatcher)
-        OSOperations().start_node(dispatcher)
+        MCSProcessManager.stop_node(is_primary=True)
+        MCSProcessManager.start_node(is_primary=True)
         return super().setUp()
 
 
@@ -118,13 +116,15 @@ class ClusterShutdownTestCase(BaseClusterTestCase):
         payload = {'timeout': 60}
         resp = requests.put(
             self.URL, verify=False, headers=self.HEADERS,
-            json=payload)
+            json=payload
+        )
         self.assertEqual(resp.status_code, 200)
 
         # Check columnstore stopped
         try:
             controllernode = subprocess.check_output(
-                ['pgrep', 'controllernode'])
+                ['pgrep', 'controllernode']
+            )
         except Exception as e:
             controllernode = None
         self.assertIsNone(controllernode)

@@ -1,11 +1,10 @@
 import logging
 import socket
-from pathlib import Path
 
 from cmapi_server.constants import MCS_DATA_PATH, MCS_MODULE_FILE_PATH
 from mcs_node_control.models.dbrm import DBRM
-from mcs_node_control.models.misc import *
-from mcs_node_control.models.process import Process, get_host_uptime
+from mcs_node_control.models.misc import get_dbroots_list, read_module_id
+from mcs_node_control.models.process import get_host_uptime
 
 
 PROC_NAMES = ['ExeMgr', 'PrimProc', 'WriteEngine', 'controllernode',
@@ -56,22 +55,6 @@ class NodeStatus:
         :rtype: string
         """
         return DBRM.get_dbrm_status()
-
-
-    def get_services_statuses(self):
-        """searches for services
-
-        The method returns PIDs of MCS services in both container or systemd
-        environments.
-
-        :rtype: generator of dict
-        """
-        proc = Process()
-        for pid in proc.get_proc_iterator(): # We might need to use generator one level above.
-            for name in PROC_NAMES:
-                if name.lower() in str(proc.name(pid)).lower():
-                    yield {"name": name, "pid" : pid}
-
 
     def get_dbroots(self, path:str = MCS_DATA_PATH):
         """searches for services

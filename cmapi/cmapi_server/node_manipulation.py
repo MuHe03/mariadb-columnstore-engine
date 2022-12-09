@@ -16,7 +16,8 @@ from lxml import etree
 
 from cmapi_server import helpers
 from cmapi_server.constants import (
-    CMAPI_CONF_PATH, DEFAULT_MCS_CONF_PATH, LOCALHOSTS, MCS_DATA_PATH,
+    CMAPI_CONF_PATH, CMAPI_SINGLE_NODE_XML, DEFAULT_MCS_CONF_PATH, LOCALHOSTS,
+    MCS_DATA_PATH,
 )
 from mcs_node_control.models.node_config import NodeConfig
 
@@ -123,9 +124,12 @@ def remove_node(
             #   add node by ip then remove using localhost, got one active node
             #   127.0.0.1. If use same name got no active nodes but all working
             #   mcs processes.
-            shutil.copyfile("./cmapi_server/SingleNode.xml",
-                output_config_filename if output_config_filename
-                                       else input_config_filename)
+            shutil.copyfile(
+                CMAPI_SINGLE_NODE_XML,
+                output_config_filename
+                if output_config_filename
+                else input_config_filename
+            )
             return
 
     except Exception as e:

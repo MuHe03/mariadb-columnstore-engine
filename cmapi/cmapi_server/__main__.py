@@ -27,6 +27,7 @@ from cmapi_server import helpers
 from cmapi_server.constants import DEFAULT_MCS_CONF_PATH, CMAPI_CONF_PATH
 from cmapi_server.controllers.dispatcher import dispatcher, jsonify_error
 from cmapi_server.failover_agent import FailoverAgent
+from cmapi_server.managers.process import MCSProcessManager
 from failover.node_monitor import NodeMonitor
 from mcs_node_control.models.dbrm_socket import SOCK_TIMEOUT, DBRMSocketHandler
 from mcs_node_control.models.node_config import NodeConfig
@@ -55,9 +56,9 @@ def clean_txn_by_timeout():
         if txn_config_changed is True:
             node_config = NodeConfig()
             node_config.rollback_config()
-            # TODO: there are no code to be run in the next
-            #       string cause we just creating generator
-            node_config.apply_config(xml_string=node_config.get_current_config())
+            node_config.apply_config(
+                xml_string=node_config.get_current_config()
+            )
         app.config.update({
                 'txn': {
                     'id': 0,
@@ -169,8 +170,9 @@ if __name__ == '__main__':
     helpers.cmapi_config_check()
 
     with open('VERSION') as f:
-        version = '.'.join([i.strip().split('=')[1]
-            for i in f.read().splitlines() if i])
+        version = '.'.join(
+            [i.strip().split('=')[1] for i in f.read().splitlines() if i]
+        )
 
     if version:
         logging.info(f'CMAPI Version: {version}')
@@ -223,6 +225,10 @@ if __name__ == '__main__':
     helpers.wait_for_deactivation_or_put_config(config_mtime)
 
     cfg_parser = helpers.get_config_parser(CMAPI_CONF_PATH)
+    dispatcher_name, dispatcher_path = helpers.get_dispatcher_name_and_path(
+        cfg_parser
+    )
+    MCSProcessManager.detect(dispatcher_name, dispatcher_path)
     # if we don't have auto_failover flag in the config turn it ON by default
     turn_on_failover = cfg_parser.getboolean(
         'application', 'auto_failover', fallback=True
@@ -237,6 +243,7 @@ if __name__ == '__main__':
         logging.info('Failover is turned OFF by CMAPI config file.')
 
     dbrm_socket = DBRMSocketHandler()
+    # TODO: fix DBRM message show on nodes restart.
     try:
         dbrm_socket.connect()
         dbrm_socket._detect_protocol()

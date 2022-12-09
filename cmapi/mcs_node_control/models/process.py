@@ -1,6 +1,7 @@
 import os
-import functools
 import time
+
+import psutil
 
 PROCFS_PATH = '/proc/' # Linux only
 
@@ -87,9 +88,23 @@ class Process():
         return ret
 
     @staticmethod
-    def check_process_alive(process_name):
-        proc = Process()
-        for pid in proc.get_proc_iterator():
-            if process_name.lower() in str(proc.name(pid)).lower():
-                return True
+    def check_process_alive(proc_name: str) -> bool:
+        """Check process running.
+
+        :param proc_name: process name
+        :type proc_name: str
+        :return: True if process running, otherwise False
+        :rtype: bool
+        """
+        # Iterate over the all the running process
+        for proc in psutil.process_iter():
+            try:
+                # Check if process name equals to the given name string.
+                if proc_name.lower() == proc.name().lower():
+                    return True
+            except (
+                psutil.NoSuchProcess, psutil.AccessDenied,
+                psutil.ZombieProcess
+            ):
+                pass
         return False

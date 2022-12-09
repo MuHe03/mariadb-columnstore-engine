@@ -3,25 +3,29 @@ This class implements the interface used by the failover module to notify
 the cluster of events like node-up / node-down, etc.
 '''
 
-import requests
-requests.packages.urllib3.disable_warnings()
 import logging
 import time
-from failover.agent_comm import AgentBase
+
+import requests
+
 from cmapi_server import helpers, node_manipulation
-from cmapi_server.controllers.endpoints import os_dispatcher  # todo, we should make this a global somewhere...
+from cmapi_server.constants import DEFAULT_MCS_CONF_PATH
+from cmapi_server.exceptions import CMAPIBasicError
+from cmapi_server.managers.process import MCSProcessManager
+from failover.agent_comm import AgentBase
 from mcs_node_control.models.node_config import NodeConfig
-from mcs_node_control.models.os_operations import OSOperations
 
 
+# Bug in pylint https://github.com/PyCQA/pylint/issues/4584
+requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
 logger = logging.getLogger(__file__)
 
 
 class FailoverAgent(AgentBase):
 
     def activateNodes(
-        self, nodes, input_config_filename=None, output_config_filename=None,
-        test_mode=False
+        self, nodes, input_config_filename=DEFAULT_MCS_CONF_PATH,
+        output_config_filename=None, test_mode=False
     ):
         logger.info(f'FA.activateNodes():  activating nodes: {nodes}')
         new_node_count = 0
@@ -39,25 +43,26 @@ class FailoverAgent(AgentBase):
         return new_node_count
 
 
-    def deactivateNodes(self, nodes, input_config_filename = None, output_config_filename = None, test_mode = False):
-        logger.info(f"FA.deactivateNodes():  deactivating nodes: {nodes}")
-
-        # to save a little typing in testing
-        kwargs = {
-            "cs_config_filename": input_config_filename,
-            "input_config_filename" : input_config_filename,
-            "output_config_filename" : output_config_filename,
-            "test_mode" : test_mode
-        }
+    def deactivateNodes(
+        self, nodes, input_config_filename=DEFAULT_MCS_CONF_PATH,
+        output_config_filename=None, test_mode=False
+    ):
+        logger.info(f'FA.deactivateNodes():  deactivating nodes: {nodes}')
 
         removed_node_count = 0
         for node in nodes:
             try:
-                logger.info(f"FA.deactivateNodes(): deactivating node {node}")
-                node_manipulation.remove_node(node, deactivate_only=True, **kwargs)
+                logger.info(f'FA.deactivateNodes(): deactivating node {node}')
+                node_manipulation.remove_node(
+                    node, input_config_filename, output_config_filename,
+                    deactivate_only=True, test_mode=test_mode
+                )
                 removed_node_count += 1
-            except Exception as e:
-                logger.error(f"FA.deactivateNodes(): failed to deactivate node {node}, got {str(e)}")
+            except Exception as err:
+                logger.error(
+                    f'FA.deactivateNodes(): failed to deactivate node {node}, '
+                    f'got {str(err)}'
+                )
                 raise
         return removed_node_count
 
@@ -85,18 +90,24 @@ class FailoverAgent(AgentBase):
     def enterStandbyMode(self, test_mode = False):
         nc = NodeConfig()
         node_name = nc.get_module_net_address(nc.get_current_config_root())
-        logger.info(f"FA.enterStandbyMode(): shutting down this node ({node_name})")
-        oso = OSOperations()
+        logger.info(
+            f'FA.enterStandbyMode(): shutting down node "{node_name}"'
+        )
 
         # this gets retried by the caller on error
-        if not test_mode:
-            msgs = list(oso.shutdown_node(os_dispatcher=os_dispatcher))
-        else:
-            msgs = []
-        if len(msgs) > 0:
-            logger.error(f"FA.enterStandbyMode(): caught this error: {msgs}")
-        else:
-            logger.info("FA.enterStandbyMode(): successful shutdown")
+        try:
+            # TODO: remove test_mode condition and add mock for testing
+            if not test_mode:
+                MCSProcessManager.stop_node(is_primary=nc.is_primary_node())
+            logger.info(
+                'FA.enterStandbyMode(): successfully stopped node.'
+            )
+        except CMAPIBasicError as err:
+            logger.error(
+                'FA.enterStandbyMode(): caught error while stopping node.'
+                f'{err.message}'
+            )
+
 
     def raiseAlarm(self, msg):
         logger.critical(msg)

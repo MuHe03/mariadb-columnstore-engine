@@ -14,8 +14,11 @@ import time
 from functools import partial
 from random import random
 from shutil import copyfile
+from typing import Tuple
 
 import requests
+
+from cmapi_server.exceptions import CMAPIBasicError
 # Bug in pylint https://github.com/PyCQA/pylint/issues/4584
 requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
 
@@ -24,8 +27,8 @@ from cmapi_server.constants import (
     DEFAULT_SM_CONF_PATH, LOCALHOSTS
 )
 from cmapi_server.handlers.cej import CEJPasswordHandler
+from cmapi_server.managers.process import MCSProcessManager
 from mcs_node_control.models.node_config import NodeConfig
-from mcs_node_control.models.os_operations import OSOperations
 
 
 def get_id():
@@ -295,6 +298,9 @@ def broadcast_new_config(
         success = False
         executor = concurrent.futures.ThreadPoolExecutor()
         loop = asyncio.get_event_loop()
+
+        # TODO: remove this retry, it cause retries and long waiting time
+        #       for eg if some of mcs processes couldn't properly start/stop
         for retry in range(5):
             try:
                 r = await loop.run_in_executor(executor, request_put)
@@ -446,6 +452,7 @@ def get_version():
 
 
 def get_dbroots(node, config=DEFAULT_MCS_CONF_PATH):
+    # TODO: somehow duplicated with NodeConfig.get_all_dbroots?
     nc = NodeConfig()
     root = nc.get_current_config_root(config)
     dbroots = []
@@ -486,7 +493,7 @@ def get_current_config_file(
     - end the transaction
     """
 
-    logging.info("get_current_config_file(): seeking the current config file")
+    logging.info('get_current_config_file(): seeking the current config file')
 
     cfg_parser = get_config_parser(cmapi_config_filename)
     key = get_current_key(cfg_parser)
@@ -496,14 +503,16 @@ def get_current_config_file(
     #       but after that we convert them to list and send as
     #       an optional_nodes argument to start_transaction()
     #       So need to work with data type of nodes.
-    desired_nodes = { node.text for node in root.findall("./DesiredNodes/Node") }
+    desired_nodes = {
+        node.text for node in root.findall('./DesiredNodes/Node')
+    }
     if len(desired_nodes) <= 1:
         return True
 
-    current_rev = int(root.find("ConfigRevision").text)
-    cluster_name = root.find("ClusterName").text
+    current_rev = int(root.find('ConfigRevision').text)
+    cluster_name = root.find('ClusterName').text
     highest_rev = current_rev
-    highest_node = "localhost"
+    highest_node = 'localhost'
     highest_config = nc.to_string(root)
 
     # TODO: data type of optional_nodes set -> list
@@ -524,42 +533,59 @@ def get_current_config_file(
         if node in localhost_aliases:
             continue
 
-        headers = { "x-api-key" : key }
-        url = f"https://{node}:8640/cmapi/{get_version()}/node/config"
+        headers = {'x-api-key' : key}
+        url = f'https://{node}:8640/cmapi/{get_version()}/node/config'
         try:
-            r = requests.get(url, verify = False, headers = headers, timeout = 5)
+            r = requests.get(url, verify=False, headers=headers, timeout=5)
             r.raise_for_status()
-            config = r.json()["config"]
+            config = r.json()['config']
         except Exception as e:
-            logging.warning(f"get_current_config_file(): got an error fetching the config file from {node}: {str(e)}")
+            logging.warning(
+                'get_current_config_file(): got an error fetching the '
+                f'config file from {node}: {str(e)}'
+            )
             continue
         tmp_root = nc.get_root_from_string(config)
-        name_node = tmp_root.find("ClusterName")
+        name_node = tmp_root.find('ClusterName')
         if name_node is None or name_node.text != cluster_name:
             continue
         nodes_in_same_cluster += 1
-        rev_node = tmp_root.find("ConfigRevision")
+        rev_node = tmp_root.find('ConfigRevision')
         if rev_node is None or int(rev_node.text) <= highest_rev:
             continue
         highest_rev = int(rev_node.text)
         highest_config = config
         highest_node = node
 
-    list(nc.apply_config(config_filename = config_filename, xml_string = highest_config))
-    commit_transaction(txn_id, cs_config_filename = config_filename, nodes = nodes)
+    nc.apply_config(config_filename=config_filename, xml_string=highest_config)
+    # TODO: do we need restart node here?
+    commit_transaction(txn_id, cs_config_filename=config_filename, nodes=nodes)
 
-    # todo, we might want stronger criteria for a large cluster.  Right now we want to reach at least one other node
+    # todo, we might want stronger criteria for a large cluster.
+    # Right now we want to reach at least one other node
     # (if there is another node)
     if len(desired_nodes) > 1 and nodes_in_same_cluster < 1:
-        os_ops = OSOperations()
-        logging.error(f"get_current_config_file(): failed to contact enough nodes in my cluster ({cluster_name}) to reliably retrieve a current configuration file.  Manual intervention may be required.")
-        list(os_ops.shutdown_node())
+        logging.error(
+            'get_current_config_file(): failed to contact enough nodes '
+            f'in my cluster ({cluster_name}) to reliably retrieve a current '
+            'configuration file.  Manual intervention may be required.'
+        )
+        # TODO: addition error handling.
+        try:
+            MCSProcessManager.stop_node(is_primary=nc.is_primary_node())
+        except CMAPIBasicError as err:
+            logging.error(err.message)
         return False
 
     if highest_rev != current_rev:
-        logging.info(f"get_current_config_file(): Accepted the config file from {highest_node}")
+        logging.info(
+            'get_current_config_file(): Accepted the config file from'
+            f' {highest_node}'
+        )
     else:
-        logging.info("get_current_config_file(): This node has the current config file")
+        logging.info(
+            'get_current_config_file(): This node has the current config file'
+        )
     return True
 
 
@@ -713,3 +739,44 @@ def cmapi_config_check(cmapi_conf_path: str = CMAPI_CONF_PATH):
             f'So copy default config from {CMAPI_DEFAULT_CONF_PATH} there.'
         )
         copyfile(CMAPI_DEFAULT_CONF_PATH, cmapi_conf_path)
+
+
+def dequote(input_str: str) -> str:
+    """Dequote input string.
+
+    If a string has single or double quotes around it, remove them.
+    Make sure the pair of quotes match.
+    If a matching pair of quotes is not found, return the string unchanged.
+
+    :param input_str: input probably quoted string
+    :type input_str: str
+    :return: unquoted string
+    :rtype: str
+    """
+    if (
+        len(input_str) >= 2 and
+        input_str[0] == input_str[-1]
+    ) and input_str.startswith(("'", '"')):
+        return input_str[1:-1]
+    return input_str
+
+
+def get_dispatcher_name_and_path(
+        config_parser: configparser.ConfigParser
+    ) -> Tuple[str, str]:
+    """Get dispatcher name and path from cmapi conf file.
+
+    :param config_parser: cmapi conf file parser
+    :type config_parser: configparser.ConfigParser
+    :return: dispatcher name and path strings
+    :rtype: tuple[str, str]
+    """
+    dispatcher_name = dequote(
+        config_parser.get('Dispatcher', 'name', fallback='systemd')
+    )
+    # TODO: used only for next releases for CustomDispatcher class
+    #       remove if useless
+    dispatcher_path = dequote(
+        config_parser.get('Dispatcher', 'path', fallback='')
+    )
+    return dispatcher_name, dispatcher_path

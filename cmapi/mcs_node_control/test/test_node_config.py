@@ -30,9 +30,6 @@ logging.basicConfig(level='DEBUG')
 # These tests needs working DBRM worker.
 class NodeConfigTest(TestCase):
 
-    @mock.patch(
-        f'{NODE_CONFIG_MODULE}.CMAPI_CONF_PATH', CMAPI_DEFAULT_CONF_PATH
-    )
     @mock.patch(f'{NODE_CONFIG_MODULE}.mkdir')
     @mock.patch(f'{NODE_CONFIG_MODULE}.chown')
     @mock.patch(f'{NODE_CONFIG_MODULE}.read_module_id', return_value=1)
@@ -54,7 +51,7 @@ class NodeConfigTest(TestCase):
             node_config = NodeConfig()
             xml_string = node_config.to_string(new_tree)
 
-            _ = list(node_config.apply_config(config_filepath, xml_string))
+            node_config.apply_config(config_filepath, xml_string)
 
             # compare configurations
             config_file = Path(config_filepath)
@@ -64,9 +61,6 @@ class NodeConfigTest(TestCase):
             config_file_copy = Path(f"{config_filepath}.cmapi.save")
             self.assertTrue(config_file_copy.exists())
 
-    @mock.patch(
-        f'{NODE_CONFIG_MODULE}.CMAPI_CONF_PATH', CMAPI_DEFAULT_CONF_PATH
-    )
     @mock.patch(f'{NODE_CONFIG_MODULE}.mkdir')
     @mock.patch(f'{NODE_CONFIG_MODULE}.chown')
     @mock.patch(f'{NODE_CONFIG_MODULE}.read_module_id', return_value=1)
@@ -86,7 +80,7 @@ class NodeConfigTest(TestCase):
             new_xml_string = new_config_file.read_text()
 
             node_config = NodeConfig()
-            list(node_config.apply_config(config_filepath, new_xml_string))
+            node_config.apply_config(config_filepath, new_xml_string)
             node_config.rollback_config(config_filepath)
 
             config_file = Path(config_filepath)

@@ -145,12 +145,8 @@ class DBRM:
         :return: mode of this DBRM node
         :rtype: string
         """
-        proc = Process()
-        # We might need to use generator one level above.
-        for pid in proc.get_proc_iterator():
-            if 'controllernode' in str(proc.name(pid)).lower():
-                return 'master'
-
+        if Process.check_process_alive('controllernode'):
+            return 'master'
         return 'slave'
 
     def _get_cluster_mode(self):

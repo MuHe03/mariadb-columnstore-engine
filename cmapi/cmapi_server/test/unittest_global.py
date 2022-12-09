@@ -14,7 +14,10 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes
 
+from cmapi_server import helpers
+from cmapi_server.constants import CMAPI_CONF_PATH
 from cmapi_server.controllers.dispatcher import dispatcher, jsonify_error
+from cmapi_server.managers.process import MCSProcessManager
 
 
 TEST_API_KEY = 'somekey123'
@@ -29,9 +32,14 @@ mcs_config_filename = './cmapi_server/test/CS-config-test.xml'
 tmp_mcs_config_filename = './cmapi_server/test/tmp.xml'
 cmapi_config_filename = './cmapi_server/cmapi_server.conf'
 tmp_cmapi_config_filename = './cmapi_server/test/tmp.conf'
+# constants for process dispatchers
+DDL_SERVICE = 'mcs-ddlproc'
+CONTROLLERNODE_SERVICE = 'mcs-controllernode.service'
+UNKNOWN_SERVICE = 'unknown_service'
+SYSTEMCTL = 'sudo systemctl'
 
 
-logging.basicConfig(level='DEBUG')
+logging.basicConfig(level=logging.DEBUG)
 
 
 def create_self_signed_certificate():
@@ -85,6 +93,12 @@ def create_self_signed_certificate():
         f.write(cert.public_bytes(serialization.Encoding.PEM))
 
 
+def run_detect_processes():
+    cfg_parser = helpers.get_config_parser(CMAPI_CONF_PATH)
+    d_name, d_path = helpers.get_dispatcher_name_and_path(cfg_parser)
+    MCSProcessManager.detect(d_name, d_path)
+
+
 @contextmanager
 def run_server():
     if not os.path.exists(cert_filename):
@@ -92,6 +106,7 @@ def run_server():
 
     cherrypy.engine.start()
     cherrypy.engine.wait(cherrypy.engine.states.STARTED)
+    run_detect_processes()
     yield
 
     cherrypy.engine.exit()
@@ -149,3 +164,40 @@ class BaseNodeManipTestCase(unittest.TestCase):
                 os.remove(tmp_file)
         if os.path.exists(tmp_mcs_config_filename):
             os.remove(tmp_mcs_config_filename)
+
+
+class BaseProcessDispatcherCase(unittest.TestCase):
+    node_started = None
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        run_detect_processes()
+        cls.node_started = MCSProcessManager.get_running_mcs_procs() != 0
+        return super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if (MCSProcessManager.get_running_mcs_procs() !=0) == cls.node_started:
+            return super().tearDownClass()
+        if cls.node_started:
+            MCSProcessManager.start_node(is_primary=True)
+        else:
+            MCSProcessManager.stop_node(is_primary=True)
+        return super().tearDownClass()
+
+    def setUp(self) -> None:
+        if MCSProcessManager.process_dispatcher.is_service_running(
+            CONTROLLERNODE_SERVICE
+        ):
+            self.controller_node_cmd = 'start'
+        else:
+            self.controller_node_cmd = 'stop'
+        # prevent to get 'start-limit-hit' systemd error, see MCOL-5186
+        os.system(f'{SYSTEMCTL} reset-failed')
+        return super().setUp()
+
+    def tearDown(self) -> None:
+        os.system(
+            f'{SYSTEMCTL} {self.controller_node_cmd} {CONTROLLERNODE_SERVICE}'
+        )
+        return super().tearDown()

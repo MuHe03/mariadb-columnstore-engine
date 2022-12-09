@@ -412,6 +412,7 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
     environment: {
       PYTHON_URL_AMD64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-x86_64_v4-unknown-linux-gnu-noopt-full.tar.zst',
       PYTHON_URL_ARM64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-aarch64-unknown-linux-gnu-noopt-full.tar.zst',
+
     },
     commands: [
       'cd cmapi',
@@ -617,7 +618,7 @@ local FinalPipeline(branch, event) = {
   depends_on: std.map(function(p) std.join(' ', ['develop', p, event, 'amd64', '10.6-enterprise']), platforms.develop) +
               std.map(function(p) std.join(' ', ['develop', p, event, 'arm64', '10.6-enterprise']), platforms_arm.develop) +
               std.map(function(p) std.join(' ', ['develop-6', p, event, 'amd64', '10.6-enterprise']), platforms['develop-6']) +
-              std.map(function(p) std.join(' ', ['develop-6', p, event, 'arm64', '10.6-enterprise']), platforms_arm['develop-6'])
+              std.map(function(p) std.join(' ', ['develop-6', p, event, 'arm64', '10.6-enterprise']), platforms_arm['develop-6']),
 };
 
 

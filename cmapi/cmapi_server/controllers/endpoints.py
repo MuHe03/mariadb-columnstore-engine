@@ -1,11 +1,7 @@
-import configparser
-
-import importlib
 import logging
 
 import socket
 import subprocess
-import sys
 import time
 
 from copy import deepcopy
@@ -16,28 +12,23 @@ import cherrypy
 import pyotp
 import requests
 
-
 from cmapi_server.exceptions import CMAPIBasicError
-
-from cmapi_server.handlers.cej import CEJError
 from cmapi_server.constants import (
     DEFAULT_SM_CONF_PATH, EM_PATH_SUFFIX, DEFAULT_MCS_CONF_PATH, MCS_EM_PATH,
     MCS_BRM_CURRENT_PATH, S3_BRM_CURRENT_PATH, CMAPI_CONF_PATH, SECRET_KEY,
 )
 from cmapi_server.controllers.error import APIError
+from cmapi_server.handlers.cej import CEJError
 from cmapi_server.handlers.cluster import ClusterHandler
 from cmapi_server.helpers import (
     cmapi_config_check, get_config_parser, get_current_key, get_dbroots,
-    system_ready, save_cmapi_conf_file,
+    system_ready, save_cmapi_conf_file, dequote
 )
+from cmapi_server.managers.process import MCSProcessManager
 from cmapi_server.node_manipulation import is_master
 from mcs_node_control.models.dbrm import set_cluster_mode
 from mcs_node_control.models.node_config import NodeConfig
 from mcs_node_control.models.node_status import NodeStatus
-from mcs_node_control.models.misc import (
-    dequote
-)
-from mcs_node_control.models.os_operations import OSOperations
 
 
 # Bug in pylint https://github.com/PyCQA/pylint/issues/4584
@@ -47,38 +38,13 @@ requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
 module_logger = logging.getLogger('cmapi_server')
 
 
-config = configparser.ConfigParser()
-config.read(CMAPI_CONF_PATH)
-try:
-    dispatcher_section = config['Dispatcher']
-except KeyError:
-    dispatcher_section = None
-dispatcher_name = 'systemd'
-if dispatcher_section is not None:
-    try:
-        dispatcher_name = dequote(dispatcher_section['name'])
-    except KeyError:
-        dispatcher_name = 'systemd'
-
-
-try:
-    dispatcher_module = importlib.import_module(
-        f'mcs_node_control.models.{dispatcher_name}'
-    )
-    module_logger.debug(f'Using {dispatcher_name} dispatcher module')
-    os_dispatcher = dispatcher_module.dispatcher
-except (ImportError, ModuleNotFoundError) as e:
-    module_logger.critical(
-        f'Can not load dispatcher module {dispatcher_name}', exc_info=True
-    )
-    sys.exit(1)
-
-
 def log_begin(logger, func_name):
     logger.debug(f"{func_name} starts")
 
 
-def raise_422_error(logger, func_name: str='', err_msg: str='') -> None:
+def raise_422_error(
+    logger, func_name: str = '', err_msg: str = '', exc_info: bool = True
+) -> None:
     """Function to log error and raise 422 api error.
 
     :param logger: logger to use
@@ -87,9 +53,11 @@ def raise_422_error(logger, func_name: str='', err_msg: str='') -> None:
     :type func_name: str, optional
     :param err_msg: error message, defaults to ''
     :type err_msg: str, optional
+    :param exc_info: write traceback to logs or not.
+    :type exc_info: bool
     :raises APIError: everytime with custom error message
     """
-    logger.error(f'{func_name} {err_msg}', exc_info=True)
+    logger.error(f'{func_name} {err_msg}', exc_info=exc_info)
     raise APIError(422, err_msg)
 
 
@@ -185,7 +153,7 @@ class StatusController:
             'cluster_mode': node_status.get_cluster_mode(),
             'dbroots': sorted(get_dbroots(node_fqdn)),
             'module_id': int(node_status.get_module_id()),
-            'services': list(node_status.get_services_statuses()),
+            'services': MCSProcessManager.get_running_mcs_procs(),
         }
 
         module_logger.debug(f'{func_name} returns {str(status_response)}')
@@ -195,9 +163,15 @@ class StatusController:
     def get_primary(self):
         """
         Handler for /primary (GET)
+
+        ..WARNING: do not add api key validation here, this may cause
+                   mcs-loadbrm.py (in MCS engine repo) failure
         """
         func_name = 'get_primary'
         log_begin(module_logger, func_name)
+        # TODO: convert this value to json bool (remove str() invoke here)
+        #       to do so loadbrm and save brm have to be fixed
+        #       + check other places
         get_master_response = {'is_primary': str(NodeConfig().is_primary_node())}
         module_logger.debug(f'{func_name} returns {str(get_master_response)}')
 
@@ -280,7 +254,6 @@ class ConfigController:
         # is_test = True means this should not save
         # the config file or apply the changes
         is_test = request_body.get('test', False)
-        #log_debug(module_logger, f"{func_name} JSON body {str(request_body)}")
         mandatory = [request_revision, request_manager, request_timeout]
         if None in mandatory:
             raise_422_error(
@@ -346,61 +319,82 @@ class ConfigController:
                     )
                 )
         elif xml_config is not None:
-            # The call generates actions
-            actions = list(node_config.apply_config(
+            node_config.apply_config(
                 config_filename=mcs_config_filename,
                 xml_string=xml_config,
                 sm_config_filename=sm_config_filename,
-                sm_config_string=sm_config)
+                sm_config_string=sm_config
             )
-            msgs = []
-            if len(actions) > 0:
-                os_operations = OSOperations()
-                kwargs = {
-                    'use_sudo': use_sudo,
-                    'dispatcher': os_dispatcher,
-                    'config_root': node_config.get_current_config_root(
-                        mcs_config_filename
-                    ),
-                    'timeout': request_timeout,
-                    'is_primary': node_config.is_primary_node()
-                }
-                msgs = list(os_operations.apply(actions, **kwargs))
+            # TODO: change stop/start to restart option.
+            try:
+                MCSProcessManager.stop_node(
+                    is_primary=node_config.is_primary_node(),
+                    use_sudo=use_sudo,
+                    timeout=request_timeout
+                )
+            except CMAPIBasicError as err:
+                raise_422_error(
+                    module_logger, func_name,
+                    f'Error while stopping node. Details: {err.message}.',
+                    exc_info=False
+                )
 
-                attempts = 0
-                # TODO: FIX IT. If got (False, False) result, for eg in case
-                #       when there are no special CEJ user set, this check loop
-                #       is useless and do nothing.
+            # if not in the list of active nodes,
+            # then do not start the services
+            new_root = node_config.get_current_config_root(
+                mcs_config_filename
+            )
+            if node_config.in_active_nodes(new_root):
+                try:
+                    MCSProcessManager.start_node(
+                        is_primary=node_config.is_primary_node(),
+                        use_sudo=use_sudo,
+                    )
+                except CMAPIBasicError as err:
+                    raise_422_error(
+                        module_logger, func_name,
+                        f'Error while starting node. Details: {err.message}.',
+                        exc_info=False
+                    )
+            else:
+                module_logger.info(
+                    'This node is not in the current ActiveNodes section. '
+                    'Not starting Columnstore processes.'
+                )
+
+            attempts = 0
+            # TODO: FIX IT. If got (False, False) result, for eg in case
+            #       when there are no special CEJ user set, this check loop
+            #       is useless and do nothing.
+            try:
+                ready, retry = system_ready(mcs_config_filename)
+            except CEJError as cej_error:
+                raise_422_error(
+                    module_logger, func_name, cej_error.message
+                )
+
+            while not ready:
+                if retry:
+                    attempts +=1
+                    if attempts >= 10:
+                        module_logger.debug(
+                            'Timed out waiting for node to be ready.'
+                        )
+                        break
+                    time.sleep(1)
+                else:
+                    break
                 try:
                     ready, retry = system_ready(mcs_config_filename)
                 except CEJError as cej_error:
                     raise_422_error(
                         module_logger, func_name, cej_error.message
                     )
-
-                while not ready:
-                    if retry:
-                        attempts +=1
-                        if attempts >= 10:
-                            module_logger.debug(
-                                'timed out waiting for node to be ready'
-                            )
-                            break
-                        time.sleep(1)
-                    else:
-                        break
-                    try:
-                        ready, retry = system_ready(mcs_config_filename)
-                    except CEJError as cej_error:
-                        raise_422_error(
-                            module_logger, func_name, cej_error.message
-                        )
-                else:
-                    module_logger.debug(f'node is ready to accept queries')
+            else:
+                module_logger.debug(f'Node is ready to accept queries.')
 
             app.config['txn']['config_changed'] = True
-            if len(msgs) > 0:
-                request_response['error'] = msgs
+
             # We might want to raise error
             return request_response
 
@@ -524,9 +518,10 @@ class RollbackController:
         if txn_config_changed is True:
             node_config = NodeConfig()
             node_config.rollback_config()
-            # TODO: there are no code to be run in the next
-            #       string cause we just creating generator
-            node_config.apply_config(xml_string=node_config.get_current_config())
+            # TODO: do we need to restart node here?
+            node_config.apply_config(
+                xml_string=node_config.get_current_config()
+            )
         app.config['txn']['id'] = 0
         app.config['txn']['timeout'] = 0
         app.config['txn']['manager_address'] = ''
@@ -553,15 +548,19 @@ class StartController:
 
         req = cherrypy.request
         use_sudo = get_use_sudo(req.app.config)
-        os_operations = OSOperations()
         node_config = NodeConfig()
-        msgs = list(os_operations.start_node(os_dispatcher,
-                                             use_sudo,
-                                             node_config.is_primary_node()))
+        try:
+            MCSProcessManager.start_node(
+                is_primary=node_config.is_primary_node(),
+                use_sudo=use_sudo
+            )
+        except CMAPIBasicError as err:
+            raise_422_error(
+                module_logger, func_name,
+                f'Error while starting node processes. Details: {err.message}',
+                exc_info=False
+            )
         start_response = {'timestamp': str(datetime.now())}
-        if len(msgs) > 0:
-            start_response['error'] = msgs
-
         module_logger.debug(f'{func_name} returns {str(start_response)}')
         return start_response
 
@@ -578,18 +577,20 @@ class ShutdownController:
         use_sudo = get_use_sudo(req.app.config)
         request_body = cherrypy.request.json
         timeout = request_body.get('timeout', 0)
-        force = request_body.get('force', False)
-        os_operations = OSOperations()
         node_config = NodeConfig()
-        msgs = list(os_operations.shutdown_node(os_dispatcher,
-                                                timeout,
-                                                use_sudo,
-                                                node_config.is_primary_node(),
-                                                force))
+        try:
+            MCSProcessManager.stop_node(
+                is_primary=node_config.is_primary_node(),
+                use_sudo=use_sudo,
+                timeout=timeout
+            )
+        except CMAPIBasicError as err:
+            raise_422_error(
+                module_logger, func_name,
+                f'Error while stopping node processes. Details: {err.message}',
+                exc_info=False
+            )
         shutdown_response = {'timestamp': str(datetime.now())}
-        if len(msgs) > 0:
-            shutdown_response['error'] = msgs
-
         module_logger.debug(f'{func_name} returns {str(shutdown_response)}')
         return shutdown_response
 
@@ -607,9 +608,13 @@ class ExtentMapController:
             while not success and retry_count < 10:
                 module_logger.debug(f'{func_name} returns {element} from S3.')
 
-                # TODO: Remove conditional once container dispatcher uses non-root by default
-                if dispatcher_name == 'systemd':
-                    args = ['su', '-s', '/bin/sh', '-c', f'smcat {S3_BRM_CURRENT_PATH}', 'mysql']
+                # TODO: Remove conditional once container dispatcher
+                #       uses non-root by default
+                if MCSProcessManager.dispatcher_name == 'systemd':
+                    args = [
+                        'su', '-s', '/bin/sh', '-c',
+                        f'smcat {S3_BRM_CURRENT_PATH}', 'mysql'
+                    ]
                 else:
                     args = ['smcat', S3_BRM_CURRENT_PATH]
 
@@ -622,9 +627,13 @@ class ExtentMapController:
                 elem_current_suffix = ret.stdout.decode("utf-8").rstrip()
                 elem_current_filename = f'{EM_PATH_SUFFIX}/{elem_current_suffix}_{element}'
 
-                # TODO: Remove conditional once container dispatcher uses non-root by default
-                if dispatcher_name == 'systemd':
-                    args = ['su', '-s', '/bin/sh', '-c', f'smcat {elem_current_filename}', 'mysql']
+                # TODO: Remove conditional once container dispatcher
+                #       uses non-root by default
+                if MCSProcessManager.dispatcher_name == 'systemd':
+                    args = [
+                        'su', '-s', '/bin/sh', '-c',
+                        f'smcat {elem_current_filename}', 'mysql'
+                    ]
                 else:
                     args = ['smcat', elem_current_filename]
 

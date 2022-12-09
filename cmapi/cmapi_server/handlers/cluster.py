@@ -16,7 +16,7 @@ from cmapi_server.helpers import (
 from cmapi_server.node_manipulation import (
     add_node, add_dbroot, remove_node,
 )
-from mcs_node_control.models.misc import get_dbrm_master, current_config_root
+from mcs_node_control.models.misc import get_dbrm_master
 from mcs_node_control.models.node_config import NodeConfig
 
 
@@ -394,7 +394,7 @@ class ClusterHandler():
 
         master = None
         if len(get_active_nodes(config)) != 0:
-            master = get_dbrm_master(current_config_root(config))
+            master = get_dbrm_master(config)
 
         if master is None:
             raise CMAPIBasicError('No master found in the cluster.')

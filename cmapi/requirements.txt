@@ -4,6 +4,7 @@ cryptography==36.0.1
 furl==2.1.3
 gsutil==5.12
 lxml==4.7.1
+psutil==5.9.1
 pyotp==2.6.0
 requests==2.27.1
 typer==0.4.1
