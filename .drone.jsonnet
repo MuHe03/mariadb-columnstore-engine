@@ -412,11 +412,11 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
     environment: {
       PYTHON_URL_AMD64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-x86_64_v4-unknown-linux-gnu-noopt-full.tar.zst',
       PYTHON_URL_ARM64: 'https://github.com/indygreg/python-build-standalone/releases/download/20221106/cpython-3.10.8+20221106-aarch64-unknown-linux-gnu-noopt-full.tar.zst',
-
     },
     commands: [
       'cd cmapi',
       'dnf install -y wget zstd findutils',
+      if (arch == 'arm64') then 'dnf install gcc python3-dev',
       'wget -qO- $${PYTHON_URL_' + std.asciiUpper(arch) + '} | tar --use-compress-program=unzstd -xf - -C ./',
       'mv python pp && mv pp/install python',
       'chown -R root:root python',
