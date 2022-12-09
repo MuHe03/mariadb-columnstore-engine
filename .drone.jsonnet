@@ -415,8 +415,8 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
     },
     commands: [
       'cd cmapi',
-      'dnf install -y wget zstd findutils',
-      if (arch == 'arm64') then 'dnf install -y gcc python39-devel && export CC=gcc && export CFLAGS="$$(/usr/bin/python3.9-config) --cflags"',
+      'dnf install -y wget zstd findutils gcc',
+      if (arch == 'arm64') then 'dnf install -y python39-devel && export CC=gcc && export CFLAGS="$$(/usr/bin/python3.9-config) --cflags"',
       'wget -qO- $${PYTHON_URL_' + std.asciiUpper(arch) + '} | tar --use-compress-program=unzstd -xf - -C ./',
       'mv python pp && mv pp/install python',
       'chown -R root:root python',
