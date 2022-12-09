@@ -551,7 +551,7 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
            {
              name: 'pkg',
              depends_on: ['unittests'],
-             image: 'docker:git',
+             image: 'bitnami/git',
              volumes: [pipeline._volumes.mdb],
              commands: [
                'cd /mdb/' + builddir,
