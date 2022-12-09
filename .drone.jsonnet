@@ -560,7 +560,7 @@ local Pipeline(branch, platform, event, arch='amd64', server='10.6-enterprise') 
                'echo "buildNo: $DRONE_BUILD_NUMBER" >> buildinfo.txt',
                'mv buildinfo.txt ' + result + '/',
                //'shopt -s dotglob',
-               'bash -c "mv ' + result + '/* /drone/src/' + result + '/',
+               'mv ' + result + '/* /drone/src/' + result + '/',
                'ls -l /drone/src/' + result,
                'echo "check columnstore package:"',
                'ls -l /drone/src/' + result + ' | grep columnstore',
